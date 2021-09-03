@@ -1,0 +1,381 @@
+---
+title: "Covid Polarization"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+### --------------------------------------------------
+### Libraries
+### --------------------------------------------------
+library(tidyverse)
+library(here)
+library(socviz)
+library(patchwork)
+library(colorspace)
+library(covdata)
+library(tidycensus)
+library(tigris)
+library(ggrepel)
+options(tigris_use_cache = TRUE)
+
+### --------------------------------------------------
+### Fonts: comment out if you don't have these properly installed
+# library(showtext)
+# showtext_auto()
+#library(myriad)
+#import_myriad_semi()
+### --------------------------------------------------
+
+library(gganimate)
+library(transformr)
+
+theme_figs <- function(){
+  theme_myriad_semi() +
+    theme(
+      plot.background = element_rect(color = "white"),
+      plot.title = element_text(size = rel(1.7)), 
+      plot.subtitle = element_text(size = rel(1.4)),
+      axis.title.x = element_text(size = rel(1.5)), 
+      axis.title.y = element_text(size = rel(1.5)),
+      axis.text.x = element_text(size = rel(1.2)), 
+      axis.text.y.left = element_text(size = rel(1.2)),
+      axis.text.y.right = element_text(size = rel(0.9)))
+}
+
+theme_set(theme_myriad_semi())
+
+
+party_colors <- c("#2E74C0", "#CB454A") 
+dem_blue <- "#2E74C0"
+rep_red <- "#CB454A"
+
+```
+
+# Politics, Mortality, and Population Data
+
+```{r}
+
+## Static, from the CDC
+covmort <- read_csv("data/deaths_by_county.csv",
+                    col_types = cols(
+  `Date as of` = col_character(),
+  `Start Date` = col_character(),
+  `End Date` = col_character(),
+  State = col_character(),
+  `County name` = col_character(),
+  `FIPS County Code` = col_character(),
+  `Urban Rural Code` = col_character(),
+  `Deaths involving COVID-19` = col_double(),
+  `Deaths from All Causes` = col_double(),
+  Footnote = col_character())) %>%
+  janitor::clean_names() %>%
+  mutate(county_fips = stringr::str_pad(fips_county_code,
+                                        5, "left", pad = "0")) %>%
+  select(state, county_name:deaths_from_all_causes, county_fips) %>%
+  relocate(county_fips) %>%
+  rename(fips = county_fips)
+
+## MIT, 2020 is incomplete by county
+election <- read_csv("data/countypres_2000-2020.csv") %>% 
+  mutate(county_fips = stringr::str_pad(county_fips, 
+                                        5, "left", pad = "0")) %>%
+  filter(year == 2016 & mode == "TOTAL") %>% 
+  group_by(county_fips) %>% 
+  mutate(share = candidatevotes / sum(candidatevotes)) %>% 
+  select(state:county_fips, candidate, party:totalvotes, share) %>% 
+  filter(candidate %in% c("HILLARY CLINTON", "DONALD TRUMP")) %>% 
+# filter(candidate %in% c("JOSEPH R BIDEN", "DONALD J TRUMP")) %>% 
+  mutate(twopartyshare = candidatevotes / sum(candidatevotes)) %>% 
+  select(-candidate) %>% 
+  pivot_wider(names_from = party, 
+              values_from = c(candidatevotes, totalvotes, 
+                              share, twopartyshare))
+
+```
+
+```{r}
+pops <- get_estimates(geography = "county", product = "population") %>% 
+  pivot_wider(names_from = variable, values_from = value) %>% 
+  janitor::clean_names() %>% 
+  rename(county_fips = geoid)
+
+elecpop <- left_join(election, pops) %>% 
+  rename(fips = county_fips) 
+
+elecpop %>% select(state:fips, name:density)
+```
+
+# Cuts
+
+```{r}
+
+tenlabs <- c("10-20%", 
+  "20-30%", 
+  "30-40%", 
+  "40-50%", 
+  "50-60%", 
+  "60-70%",
+  "70-80%", 
+  "80-90%", 
+  ">90%" )
+
+
+fivelabs <- c(
+  "0-20%", 
+  "21-40%", 
+  "41-60%", 
+  "61-80%", 
+  "81-100%")
+
+duolabs <- paste0(seq(0, 95, 5), "th")
+declabs <- paste0(seq(0, 90, 10), "th")
+
+pops <- pops %>% 
+  rename(fips = county_fips)
+election <- election %>% 
+  rename(fips = county_fips)
+
+
+pops_ny <- pops %>% 
+  filter(fips %in% c("36005", "36047", "36061", "36081", "36085")) %>% 
+  summarize(pop = sum(pop), 
+            density = mean(density)) %>% 
+  mutate(name = "New York City, New York", 
+         fips = "NYC") %>% 
+  select(colnames(pops))
+
+pops_rc <- pops %>% 
+  filter(fips %nin% c("36005", "36047", "36061", "36081", "36085")) %>%
+  bind_rows(pops_ny)
+  
+pop_deciles <- quantile(pops_rc$pop, 
+                    probs = seq(0, 1, 0.1), na.rm = TRUE)
+
+den_deciles <- quantile(pops_rc$density, 
+                              probs = seq(0, 1, 0.1), na.rm = TRUE)
+
+pops_rc <- pops_rc %>% 
+  mutate(pop_decile = cut(pop, breaks = pop_deciles, 
+                          labels = declabs), 
+         den_decile = cut(density, breaks = den_deciles, 
+                          labels = declabs))
+
+## Need to bundle NYC because it's bundled in NYT's nytcovdata
+election_ny <-  
+  read_csv("data/countypres_2000-2020.csv") %>% 
+  mutate(county_fips = stringr::str_pad(county_fips, 
+                                        5, "left", pad = "0")) %>%
+  filter(year == 2016 & mode == "TOTAL") %>% 
+  filter(county_fips %in% c("36005", "36047", "36061", "36081", "36085")) %>% 
+  group_by(state, party, candidate) %>% 
+  summarize(across(where(is.numeric), sum)) %>% 
+  mutate(fips = "NYC",
+         county_name = "NYC",
+         state_po = "NY",
+         year = 2016,
+         mode = "TOTAL") %>% 
+  group_by(fips) %>% 
+  mutate(share = candidatevotes / sum(candidatevotes)) %>% 
+  filter(candidate %in% c("HILLARY CLINTON", "DONALD TRUMP")) %>% 
+  mutate(twopartyshare = candidatevotes / sum(candidatevotes)) %>% 
+  select(-candidate) %>% 
+  pivot_wider(names_from = party, 
+              values_from = c(candidatevotes, totalvotes, 
+                              share, twopartyshare)) %>% 
+  select(colnames(election))
+
+election_rc <- election %>% 
+  filter(fips %nin% c("36005", "36047", "36061", "36081", "36085")) %>% 
+  bind_rows(election_ny)
+
+
+deciles <- quantile(election_rc$twopartyshare_REPUBLICAN, 
+                    probs = seq(0, 1, 0.1), na.rm = TRUE)
+
+duodeciles <- quantile(election_rc$twopartyshare_REPUBLICAN, 
+                    probs = seq(0, 1, 0.05), na.rm = TRUE)
+
+quintiles <- quantile(election_rc$twopartyshare_REPUBLICAN, 
+                    probs = seq(0, 1, 0.2), na.rm = TRUE)
+
+election_rc <- election_rc %>% 
+  ungroup() %>% 
+  mutate(r_share_10 = cut(twopartyshare_REPUBLICAN, 
+                          breaks = seq(0, 1, 0.1)),
+         r_share_5 = cut(twopartyshare_REPUBLICAN, 
+                          breaks = seq(0, 1, 0.2)), 
+         r_deciles = cut(twopartyshare_REPUBLICAN,
+                         breaks = deciles, 
+                         labels = declabs),
+         r_duodeciles = cut(twopartyshare_REPUBLICAN,
+                         breaks = duodeciles, 
+                         labels = duolabs),
+         r_quintiles = cut(twopartyshare_REPUBLICAN,
+                         breaks = quintiles),
+         r_ntile_10 = cut_interval(twopartyshare_REPUBLICAN, 10))
+
+nytcovcounty_rc <- nytcovcounty
+nytcovcounty_rc[nytcovcounty_rc$county=="New York City","fips"] <- "NYC"
+
+df <- left_join(nytcovcounty_rc, election_rc, by = "fips") %>% 
+  left_join(pops_rc, by = "fips") 
+```
+
+# Plots
+
+```{r}
+df_plot <- df %>% 
+  select(date, fips, cases, deaths, pop, r_deciles) %>% 
+  group_by(date, r_deciles) %>% 
+  summarize(cases = sum(cases), 
+            deaths = sum(deaths), 
+            pop = sum(pop)) %>% 
+  mutate(covidrate = (deaths/pop)*1e5) %>% 
+  drop_na()
+```
+
+```{r}
+## quick check
+df_plot %>% 
+  ggplot(aes(x = date, y = covidrate, color = r_deciles)) + 
+  geom_line()
+
+# df_plot %>% 
+#   filter(if_any(everything(), is.na))
+
+
+## Endpoints
+last_df <- df_plot %>% 
+    group_by(r_deciles) %>%
+    summarize(
+        lastx = max(df_plot$date),
+        lasty = dplyr::last(covidrate)
+    )
+
+
+  
+out <- df_plot  %>%
+    group_by(r_deciles) %>% 
+    arrange(date) %>% 
+    mutate(wkly = slider::slide_dbl(covidrate, 
+                                    ~ mean(.x, na.rm = TRUE), .before = 7)) %>% 
+    ggplot(mapping = aes(x = date, 
+                         y = wkly, 
+                         group = r_deciles, 
+                         color = r_deciles)) + 
+    geom_line() +
+    geom_label_repel(data = last_df, 
+                    mapping = aes(x = lastx, 
+                                  y = lasty + 3, 
+                                  label = r_deciles,
+                                  fill = r_deciles), 
+                    color = "white", 
+                    size = rel(1.75), 
+                    box.padding = 0.05, 
+                    label.padding = 0.1, 
+                    label.size = 0, 
+                    direction = "y", 
+                    force_pull = 30,
+                    min.segment.length = 10,
+                    max.overlaps = 20) +
+    scale_x_date(date_breaks = "month", 
+                 labels = scales::label_date_short()) + 
+    scale_color_discrete_sequential(palette = "Red-Blue") +
+    scale_fill_discrete_sequential(palette = "Red-Blue") +
+    # scale_y_continuous(
+    #   limits = c(0, max(df_plot$covidrate + 5)),
+    #   expand = expansion(add = 0),
+    #   sec.axis = dup_axis(
+    #     breaks = last_df$last,
+    #     labels = last_df$r_duodeciles,
+    #     name = NULL)) +
+    labs(x = "Date", 
+         y = "Cumulative Deaths per 100,000 people", 
+         title = "COVID-19's Partisan Trajectory",
+         subtitle = "U.S. counties aggregated by percentiles of the Republican\ntwo-party vote share in the 2016 presidential election.",
+         caption = "Data: MIT Election Lab, New York Times, US Census Bureau. Graph: Kieran Healy.",
+         color = "Percentiles of the Republican\nTwo-Party Vote Share in\nthe 2016 Presidential Election") +
+    guides(color = "none", fill = "none")
+
+  out <- out + theme_light(base_family = "Fabrikat Kompakt")
+    ggsave("figures/partisan-decile.pdf", out, 
+           height = 8, width = 6, device = cairo_pdf)
+  ggsave("figures/partisan.png", out, height = 11, width = 8.5, dpi = 200)
+
+
+```
+
+
+## Density and Pop
+
+```{r}
+df_plot <- df %>% 
+  select(date, fips, cases, deaths, pop, den_decile) %>% 
+  group_by(date, den_decile) %>% 
+  summarize(cases = sum(cases), 
+            deaths = sum(deaths), 
+            pop = sum(pop)) %>% 
+  mutate(covidrate = (deaths/pop)*1e5) %>% 
+  drop_na()
+```
+
+```{r}
+df_plot %>% 
+  ggplot(aes(x = date, y = covidrate, color = den_decile)) + 
+  geom_line()
+
+# df_plot %>% 
+#   filter(if_any(everything(), is.na))
+
+last_df <- df_plot %>% 
+    group_by(den_decile) %>%
+    summarize(
+        lastx = max(df_plot$date),
+        lasty = dplyr::last(covidrate)
+    )
+
+  
+out <- df_plot  %>%
+    group_by(den_decile) %>% 
+    arrange(date) %>% 
+    mutate(wkly = slider::slide_dbl(covidrate, 
+                                    ~ mean(.x, na.rm = TRUE), .before = 7)) %>% 
+    ggplot(mapping = aes(x = date, 
+                         y = wkly, 
+                         group = den_decile, 
+                         color = den_decile)) + 
+    geom_line() +
+    geom_label_repel(data = last_df, 
+                    mapping = aes(x = lastx, 
+                                  y = lasty + 3, 
+                                  label = den_decile,
+                                  fill = den_decile), 
+                    color = "white", 
+                    size = rel(1.75), 
+                    box.padding = 0.05, 
+                    label.padding = 0.1, 
+                    label.size = 0, 
+                    direction = "y", 
+                    force_pull = 30,
+                    min.segment.length = 10,
+                    max.overlaps = 20) +
+    scale_x_date(date_breaks = "month", 
+                 labels = scales::label_date_short()) + 
+    scale_color_discrete_sequential(palette = "ag_Sunset") +
+    scale_fill_discrete_sequential(palette = "ag_Sunset") +
+    labs(x = "Date", 
+         y = "Cumulative Deaths per 100,000 people", 
+         title = "COVID-19's Density Trajectory",
+         subtitle = "U.S. counties aggregated by decile of Population Density.",
+         caption = "Data: New York Times, US Census Bureau. Graph: Kieran Healy.",
+         color = "Percentiles of the Republican\nTwo-Party Vote Share in\nthe 2016 Presidential Election") +
+    guides(color = "none", fill = "none")
+
+  out <- out + theme_light(base_family = "Fabrikat Kompakt")
+    ggsave("figures/density-decile.pdf", out, 
+           height = 8, width = 6, device = cairo_pdf)
+
+
+```
