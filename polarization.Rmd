@@ -57,8 +57,22 @@ rep_red <- "#CB454A"
 
 ```{r}
 
+## From the NYT: See 
+## https://github.com/nytimes/covid-19-data/tree/master/rolling-averages
+nytcounty <- read_csv("data/us-counties-nyt.csv") %>% 
+  separate(geoid, into = c("prefix", "fips")) %>% 
+  select(-prefix)
+
 ## Static, from the CDC
-covmort <- read_csv("data/deaths_by_county.csv",
+## 1 By county: https://data.cdc.gov/NCHS/Provisional-COVID-19-Death-Counts-in-the-United-St/kn79-hsxy
+## 2 By county and race: https://data.cdc.gov/NCHS/Provisional-COVID-19-Death-Counts-by-County-and-Ra/k8wy-p9cg
+
+## 1 https://data.cdc.gov/api/views/kn79-hsxy/rows.csv?accessType=DOWNLOAD
+## 2 https://data.cdc.gov/api/views/k8wy-p9cg/rows.csv?accessType=DOWNLOAD
+
+
+covmort_url <- "https://data.cdc.gov/api/views/kn79-hsxy/rows.csv?accessType=DOWNLOAD"
+covmort <- read_csv(covmort_url,
                     col_types = cols(
   `Date as of` = col_character(),
   `Start Date` = col_character(),
@@ -78,20 +92,28 @@ covmort <- read_csv("data/deaths_by_county.csv",
   rename(fips = county_fips)
 
 ## MIT, 2020 is incomplete by county
-election <- read_csv("data/countypres_2000-2020.csv") %>% 
-  mutate(county_fips = stringr::str_pad(county_fips, 
-                                        5, "left", pad = "0")) %>%
-  filter(year == 2016 & mode == "TOTAL") %>% 
+# election <- read_csv("data/countypres_2000-2020.csv") %>% 
+#   mutate(county_fips = stringr::str_pad(county_fips, 
+#                                         5, "left", pad = "0")) %>%
+#   filter(year == 2016 & mode == "TOTAL") %>% 
+#   group_by(county_fips) %>% 
+#   mutate(share = candidatevotes / sum(candidatevotes)) %>% 
+#   select(state:county_fips, candidate, party:totalvotes, share) %>% 
+#   filter(candidate %in% c("HILLARY CLINTON", "DONALD TRUMP")) %>% 
+# # filter(candidate %in% c("JOSEPH R BIDEN", "DONALD J TRUMP")) %>% 
+#   mutate(twopartyshare = candidatevotes / sum(candidatevotes)) %>% 
+#   select(-candidate) %>% 
+#   pivot_wider(names_from = party, 
+#               values_from = c(candidatevotes, totalvotes, 
+#                               share, twopartyshare))
+
+
+election2 <- read_csv("data/2020_data.csv", 
+                      col_types = cols(county_fips = col_character())) %>% 
   group_by(county_fips) %>% 
-  mutate(share = candidatevotes / sum(candidatevotes)) %>% 
-  select(state:county_fips, candidate, party:totalvotes, share) %>% 
-  filter(candidate %in% c("HILLARY CLINTON", "DONALD TRUMP")) %>% 
-# filter(candidate %in% c("JOSEPH R BIDEN", "DONALD J TRUMP")) %>% 
-  mutate(twopartyshare = candidatevotes / sum(candidatevotes)) %>% 
-  select(-candidate) %>% 
-  pivot_wider(names_from = party, 
-              values_from = c(candidatevotes, totalvotes, 
-                              share, twopartyshare))
+  rename(state = state_name, 
+         fips = county_fips) %>% 
+  select(state:county_name, total_votes, per_gop:per_point_diff) 
 
 ```
 
@@ -99,12 +121,9 @@ election <- read_csv("data/countypres_2000-2020.csv") %>%
 pops <- get_estimates(geography = "county", product = "population") %>% 
   pivot_wider(names_from = variable, values_from = value) %>% 
   janitor::clean_names() %>% 
-  rename(county_fips = geoid)
+  rename(fips = geoid)
 
-elecpop <- left_join(election, pops) %>% 
-  rename(fips = county_fips) 
-
-elecpop %>% select(state:fips, name:density)
+elecpop <- left_join(election2, pops)
 ```
 
 # Cuts
@@ -132,12 +151,6 @@ fivelabs <- c(
 duolabs <- paste0(seq(0, 95, 5), "th")
 declabs <- paste0(seq(0, 90, 10), "th")
 
-pops <- pops %>% 
-  rename(fips = county_fips)
-election <- election %>% 
-  rename(fips = county_fips)
-
-
 pops_ny <- pops %>% 
   filter(fips %in% c("36005", "36047", "36061", "36081", "36085")) %>% 
   summarize(pop = sum(pop), 
@@ -163,58 +176,73 @@ pops_rc <- pops_rc %>%
                           labels = declabs))
 
 ## Need to bundle NYC because it's bundled in NYT's nytcovdata
-election_ny <-  
-  read_csv("data/countypres_2000-2020.csv") %>% 
-  mutate(county_fips = stringr::str_pad(county_fips, 
-                                        5, "left", pad = "0")) %>%
-  filter(year == 2016 & mode == "TOTAL") %>% 
-  filter(county_fips %in% c("36005", "36047", "36061", "36081", "36085")) %>% 
-  group_by(state, party, candidate) %>% 
-  summarize(across(where(is.numeric), sum)) %>% 
-  mutate(fips = "NYC",
-         county_name = "NYC",
-         state_po = "NY",
-         year = 2016,
-         mode = "TOTAL") %>% 
-  group_by(fips) %>% 
-  mutate(share = candidatevotes / sum(candidatevotes)) %>% 
-  filter(candidate %in% c("HILLARY CLINTON", "DONALD TRUMP")) %>% 
-  mutate(twopartyshare = candidatevotes / sum(candidatevotes)) %>% 
-  select(-candidate) %>% 
-  pivot_wider(names_from = party, 
-              values_from = c(candidatevotes, totalvotes, 
-                              share, twopartyshare)) %>% 
-  select(colnames(election))
+# election_ny <-  
+#   read_csv("data/countypres_2000-2020.csv") %>% 
+#   mutate(county_fips = stringr::str_pad(county_fips, 
+#                                         5, "left", pad = "0")) %>%
+#   filter(year == 2020 & mode == "TOTAL") %>% 
+#   filter(county_fips %in% c("36005", "36047", "36061", "36081", "36085")) %>% 
+#   group_by(state, party, candidate) %>% 
+#   summarize(across(where(is.numeric), sum)) %>% 
+#   mutate(fips = "NYC",
+#          county_name = "NYC",
+#          state_po = "NY",
+#          year = 2016,
+#          mode = "TOTAL") %>% 
+#   group_by(fips) %>% 
+#   mutate(share = candidatevotes / sum(candidatevotes)) %>% 
+#   filter(candidate %in% c("JOSEPH R BIDEN JR", "DONALD J TRUMP")) %>% 
+#   mutate(twopartyshare = candidatevotes / sum(candidatevotes)) %>% 
+#   select(-candidate) %>% 
+#   pivot_wider(names_from = party, 
+#               values_from = c(candidatevotes, totalvotes, 
+#                               share, twopartyshare)) %>% 
+#   select(colnames(election))
 
-election_rc <- election %>% 
+election_ny <- election2 %>% 
+  filter(fips %in% c("36005", "36047", "36061", "36081", "36085")) %>% 
+  select(state:per_dem) %>% 
+  mutate(rvotes = total_votes*per_gop, 
+         dvotes = total_votes*per_dem) %>% 
+  select(state:total_votes, rvotes, dvotes) %>% 
+  group_by(state) %>% 
+  summarize(across(where(is.numeric), sum)) %>% 
+  mutate(fips = "NYC", county_name = "NYC", 
+         per_gop = rvotes/total_votes, 
+         per_dem = dvotes/total_votes, 
+         per_point_diff = per_gop-per_dem) %>% 
+  select(colnames(election2))
+  
+
+election_rc <- election2 %>% 
   filter(fips %nin% c("36005", "36047", "36061", "36081", "36085")) %>% 
   bind_rows(election_ny)
 
 
-deciles <- quantile(election_rc$twopartyshare_REPUBLICAN, 
+deciles <- quantile(election_rc$per_gop, 
                     probs = seq(0, 1, 0.1), na.rm = TRUE)
 
-duodeciles <- quantile(election_rc$twopartyshare_REPUBLICAN, 
+duodeciles <- quantile(election_rc$per_gop, 
                     probs = seq(0, 1, 0.05), na.rm = TRUE)
 
-quintiles <- quantile(election_rc$twopartyshare_REPUBLICAN, 
+quintiles <- quantile(election_rc$per_gop, 
                     probs = seq(0, 1, 0.2), na.rm = TRUE)
 
 election_rc <- election_rc %>% 
   ungroup() %>% 
-  mutate(r_share_10 = cut(twopartyshare_REPUBLICAN, 
+  mutate(r_share_10 = cut(per_gop, 
                           breaks = seq(0, 1, 0.1)),
-         r_share_5 = cut(twopartyshare_REPUBLICAN, 
+         r_share_5 = cut(per_gop, 
                           breaks = seq(0, 1, 0.2)), 
-         r_deciles = cut(twopartyshare_REPUBLICAN,
+         r_deciles = cut(per_gop,
                          breaks = deciles, 
                          labels = declabs),
-         r_duodeciles = cut(twopartyshare_REPUBLICAN,
+         r_duodeciles = cut(per_gop,
                          breaks = duodeciles, 
                          labels = duolabs),
-         r_quintiles = cut(twopartyshare_REPUBLICAN,
+         r_quintiles = cut(per_gop,
                          breaks = quintiles),
-         r_ntile_10 = cut_interval(twopartyshare_REPUBLICAN, 10))
+         r_ntile_10 = cut_interval(per_gop, 10))
 
 nytcovcounty_rc <- nytcovcounty
 nytcovcounty_rc[nytcovcounty_rc$county=="New York City","fips"] <- "NYC"
@@ -222,6 +250,11 @@ nytcovcounty_rc[nytcovcounty_rc$county=="New York City","fips"] <- "NYC"
 df <- left_join(nytcovcounty_rc, election_rc, by = "fips") %>% 
   left_join(pops_rc, by = "fips") 
 ```
+
+```{r}
+
+```
+
 
 # Plots
 
@@ -234,17 +267,11 @@ df_plot <- df %>%
             pop = sum(pop)) %>% 
   mutate(covidrate = (deaths/pop)*1e5) %>% 
   drop_na()
-```
 
-```{r}
 ## quick check
 df_plot %>% 
   ggplot(aes(x = date, y = covidrate, color = r_deciles)) + 
   geom_line()
-
-# df_plot %>% 
-#   filter(if_any(everything(), is.na))
-
 
 ## Endpoints
 last_df <- df_plot %>% 
@@ -254,8 +281,6 @@ last_df <- df_plot %>%
         lasty = dplyr::last(covidrate)
     )
 
-
-  
 out <- df_plot  %>%
     group_by(r_deciles) %>% 
     arrange(date) %>% 
@@ -268,11 +293,11 @@ out <- df_plot  %>%
     geom_line() +
     geom_label_repel(data = last_df, 
                     mapping = aes(x = lastx, 
-                                  y = lasty + 3, 
+                                  y = lasty, 
                                   label = r_deciles,
                                   fill = r_deciles), 
                     color = "white", 
-                    size = rel(1.75), 
+                    size = rel(2), 
                     box.padding = 0.05, 
                     label.padding = 0.1, 
                     label.size = 0, 
@@ -294,14 +319,15 @@ out <- df_plot  %>%
     labs(x = "Date", 
          y = "Cumulative Deaths per 100,000 people", 
          title = "COVID-19's Partisan Trajectory",
-         subtitle = "U.S. counties aggregated by percentiles of the Republican\ntwo-party vote share in the 2016 presidential election.",
-         caption = "Data: MIT Election Lab, New York Times, US Census Bureau. Graph: Kieran Healy.",
+         subtitle = "U.S. counties aggregated by percentiles of the Republican\ntwo-party vote share in the 2020 presidential election.",
+         caption = "Data: The New York Times, US Census Bureau. Graph: Kieran Healy.",
          color = "Percentiles of the Republican\nTwo-Party Vote Share in\nthe 2016 Presidential Election") +
     guides(color = "none", fill = "none")
 
-  out <- out + theme_light(base_family = "Fabrikat Kompakt")
-    ggsave("figures/partisan-decile.pdf", out, 
-           height = 8, width = 6, device = cairo_pdf)
+  out <- out + theme_light(base_family = "IBM Plex Sans") + 
+    theme(axis.text.x = element_text(size = rel(0.8)))
+  ggsave("figures/partisan-decile.pdf", out, 
+           height = 7, width = 6, device  = cairo_pdf)
   ggsave("figures/partisan.png", out, height = 11, width = 8.5, dpi = 200)
 
 
@@ -353,7 +379,7 @@ out <- df_plot  %>%
                                   label = den_decile,
                                   fill = den_decile), 
                     color = "white", 
-                    size = rel(1.75), 
+                    size = rel(1.95), 
                     box.padding = 0.05, 
                     label.padding = 0.1, 
                     label.size = 0, 
@@ -369,13 +395,17 @@ out <- df_plot  %>%
          y = "Cumulative Deaths per 100,000 people", 
          title = "COVID-19's Density Trajectory",
          subtitle = "U.S. counties aggregated by decile of Population Density.",
-         caption = "Data: New York Times, US Census Bureau. Graph: Kieran Healy.",
-         color = "Percentiles of the Republican\nTwo-Party Vote Share in\nthe 2016 Presidential Election") +
+         caption = "Data: New York Times, US Census Bureau. Graph: Kieran Healy.") +
     guides(color = "none", fill = "none")
 
-  out <- out + theme_light(base_family = "Fabrikat Kompakt")
-    ggsave("figures/density-decile.pdf", out, 
-           height = 8, width = 6, device = cairo_pdf)
+out <- out + theme_light(base_family = "IMB Plex Sans") + 
+  theme(axis.text.x = element_text(size = rel(0.8)))
+ggsave("figures/density-decile.pdf", out, 
+           height = 7, width = 7, device = cairo_pdf)
 
 
 ```
+
+
+
+
