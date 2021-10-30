@@ -57,7 +57,7 @@ rep_red <- "#CB454A"
 
 ```{r}
 
-## From the NYT: See 
+## From the NYT: To get this data file (100MB) see 
 ## https://github.com/nytimes/covid-19-data/tree/master/rolling-averages
 nytcounty <- read_csv("data/us-counties-nyt.csv") %>% 
   separate(geoid, into = c("prefix", "fips")) %>% 

@@ -5,5 +5,5 @@
 
 Some COVID graphs by county decile.
 
-![](/figures/density-decile-man.png)
+![](/figures/partisan-decile-2020-man.png)
 
